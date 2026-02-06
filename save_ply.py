@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from plyfile import PlyData, PlyElement
 import os
-
+import io
 
 def inspect_gaussians(gaussians):
     """
@@ -479,14 +479,10 @@ def save_gaussians_simple(gaussians, output_path, use_glb=True):
         gltf.buffers[0].uri = os.path.basename(bin_path)
         
         # Save the glTF JSON
-        gltf.save(output_path)
+        buffer = io.BytesIO()
+        gltf.save(buffer)
+        return buffer.getvalue()
         
-        gltf_size = os.path.getsize(output_path)
-        bin_size = os.path.getsize(bin_path)
-        print(f"\n✓ Saved to {output_path}")
-        print(f"  Binary data: {bin_path}")
-        print(f"  Points: {len(positions):,}")
-        print(f"  Total size: {(gltf_size + bin_size) / 1024 / 1024:.2f} MB")
 
 def save_gaussians_to_gltf(gaussians, output_path, use_glb=True):
     """
