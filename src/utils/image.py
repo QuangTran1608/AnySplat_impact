@@ -183,3 +183,12 @@ def process_image(img_path):
     img = img.crop((left, top, right, bottom))
     img_tensor = torchvision.transforms.ToTensor()(img) * 2.0 - 1.0 # [-1, 1]
     return img_tensor
+
+def process_cv_image(img):
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+    elif img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+    else:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    return process_image(Image.fromarray(img))
