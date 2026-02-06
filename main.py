@@ -2,7 +2,7 @@ from pathlib import Path
 import torch
 import os
 import sys
-from time import time
+from time import time, sleep
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.misc.image_io import save_interpolated_video
@@ -46,3 +46,5 @@ if __name__ == "__main__":
         if frame_run % 10 == 0:
             current_time = time()
             print(f"FPS: {frame_run / (current_time - begin):.2f}")
+
+        sleep(0.1)

@@ -185,10 +185,33 @@ def process_image(img_path):
     return img_tensor
 
 def process_cv_image(img):
-    if img.ndim == 2:
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-    elif img.shape[2] == 4:
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+    # Convert BGR (OpenCV format) to RGB
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    
+    # Convert numpy array to PIL Image
+    img_pil = Image.fromarray(img_rgb)
+    
+    if img_pil.mode == 'RGBA':
+        # Convert RGBA to RGB by removing alpha channel
+        img_pil = img_pil.convert('RGB')
+    
+    # Resize to maintain aspect ratio and then center crop to 448x448
+    width, height = img_pil.size
+    if width > height:
+        new_height = 448
+        new_width = int(width * (new_height / height))
     else:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    return process_image(Image.fromarray(img))
+        new_width = 448
+        new_height = int(height * (new_width / width))
+    
+    img_pil = img_pil.resize((new_width, new_height))
+    
+    # Center crop
+    left = (new_width - 448) // 2
+    top = (new_height - 448) // 2
+    right = left + 448
+    bottom = top + 448
+    img_pil = img_pil.crop((left, top, right, bottom))
+    
+    img_tensor = torchvision.transforms.ToTensor()(img_pil) * 2.0 - 1.0  # [-1, 1]
+    return img_tensor
