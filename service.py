@@ -1,27 +1,24 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
 import torch
 import os
 import sys
-from typing import List
 import cv2
 import numpy as np
-from io import BytesIO
-from PIL import Image
 from pydantic import BaseModel
 
 import base64
+import httpx
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.misc.image_io import save_interpolated_video
 from src.model.model.anysplat import AnySplat
-from src.utils.image import process_image, process_cv_image
-from save_ply import save_gaussians_to_ply, save_gaussians_simple, inspect_gaussians
-import httpx
-import requests
+from src.utils.image import process_cv_image
+from save_ply import save_gaussians_simple
+from qwen_description import VideoAnalyzer
+
 import time
 
 app = FastAPI(title="AnySplat Service")
@@ -36,15 +33,17 @@ app.add_middleware(
 # Global variables for model and latest result
 model = None
 device = None
+qwen_analyzer = None
 latest_result = None
-glb_output_path = "/home/lauretta/quang/impact/AnySplat_impact/glb_output"
-caps = [cv2.VideoCapture("rtsp://192.168.1.190:554/stream/main"),
-        cv2.VideoCapture("rtsp://192.168.1.192:554/stream/main")]
+glb_output_path = "/home/lauretta/quang/impact/ImpactComponentFrontEnd/output"
+video_path = "/home/lauretta/quang/impact/AnySplat_impact/video_output_path"
+# caps = [cv2.VideoCapture("rtsp://192.168.1.190:554/stream/main"),
+#         cv2.VideoCapture("rtsp://192.168.1.192:554/stream/main")]
 
 @app.on_event("startup")
 async def load_model():
     """Load the model on startup"""
-    global model, device
+    global model, device, qwen_analyzer
     
     print("Loading AnySplat model...")
     model = AnySplat.from_pretrained("lhjiang/anysplat")
@@ -54,6 +53,8 @@ async def load_model():
     for param in model.parameters():
         param.requires_grad = False
     print(f"Model loaded successfully on {device}")
+    qwen_analyzer = VideoAnalyzer(model_name="Qwen/Qwen2-VL-2B-Instruct")
+    print("Qwen Video Analyzer initialized")
 
 def base64_to_cv2(base64_string: str) -> np.ndarray:
     """Convert base64 string to OpenCV image"""
@@ -112,7 +113,8 @@ async def process_images(request: ImageRequest):
                 status_code=400,
                 detail=f"Error decoding camera2_image: {str(e)}"
             )
-
+        images_captured_time = time.time() - begin
+        
         async with httpx.AsyncClient() as client:
             try:
                 timestamp_payload = {
@@ -137,11 +139,11 @@ async def process_images(request: ImageRequest):
                 print(f"✗ Connection failed - is the server running? {e}")
             except Exception as e:
                 print(f"✗ Request failed: {type(e).__name__} - {e}")
-        begin = time.time()
+        # begin = time.time()
         # Process images through the model
         processed_images = [process_cv_image(frame) for frame in frames]
         images_tensor = torch.stack(processed_images, dim=0).unsqueeze(0).to(device)  # [1, 2, 3, 448, 448]
-
+        # processing_time = time.time() - begin
         async with httpx.AsyncClient() as client:
             timestamp_payload = {
                 "id": 2,
@@ -168,7 +170,7 @@ async def process_images(request: ImageRequest):
         # Run inference
         with torch.no_grad():
             gaussians, pred_context_pose = model.inference((images_tensor + 1) * 0.5)
-        
+        gaussian_splatting_time = time.time() - begin
         async with httpx.AsyncClient() as client:
             timestamp_payload = {
                 "id": 1,
@@ -193,7 +195,7 @@ async def process_images(request: ImageRequest):
         # output_path = "glb_output/output.glb"
         os.makedirs(glb_output_path, exist_ok=True)
         save_gaussians_simple(gaussians, os.path.join(glb_output_path, "output.glb"))
-        save_gaussians_to_ply(gaussians, os.path.join(glb_output_path, "output.ply"), binary=True)
+        # save_gaussians_to_ply(gaussians, os.path.join(glb_output_path, "output.ply"), binary=True)
 
         async with httpx.AsyncClient() as client:
             reload_payload = {
@@ -215,12 +217,29 @@ async def process_images(request: ImageRequest):
 
         pred_all_extrinsic = pred_context_pose['extrinsic']
         pred_all_intrinsic = pred_context_pose['intrinsic']
-        save_interpolated_video(pred_all_extrinsic, pred_all_intrinsic, b, h, w, gaussians, "video_output_path", model.decoder)
-        
+        save_interpolated_video(pred_all_extrinsic, pred_all_intrinsic, b, h, w, gaussians, video_path, model.decoder)
+        begin = time.time()
+        analysis = qwen_analyzer(f"{video_path}/rgb.mp4")
+        print(f"Environment: {analysis['environment']}")
+        print(f"Number of People: {analysis['number_of_people']}")
+        print(f"Activities: {analysis['activities']}")
+        print(f"Threats: {analysis['threats']}")
+        print(f"Is Anomaly: {analysis['is_anomaly']}")
+        print(f"Anomaly Reason: {analysis['anomaly_reason']}")
+        processing_time = time.time() - begin
         # Store result for GET endpoint
         latest_result = {
             "status": "success",
-            "output_file": glb_output_path,
+            "ply_file_url": f"http://localhost:3001/output/output.glb",
+            'gaussian_splatting_time': int(gaussian_splatting_time * 1000),  # Convert to milliseconds
+            'images_captured_time': int(images_captured_time * 1000),  # Convert to milliseconds
+            'processing_time': int(processing_time * 1000),  # Convert to milliseconds
+            "people_count": analysis['number_of_people'],
+            "environment": analysis['environment'],
+            "activity": analysis['activities'],
+            "threats": analysis['threats'],
+            "is_anomaly": analysis['is_anomaly'],
+            "anomaly_reason": analysis['anomaly_reason'],   
             "num_images_processed": len(frames),
             "image_shape": [h, w],
             "device": str(device),
@@ -232,10 +251,7 @@ async def process_images(request: ImageRequest):
         }
         
         return JSONResponse(
-            content={
-                "message": "Images processed successfully",
-                "result": latest_result
-            },
+            content=latest_result,
             status_code=200
         )
         
@@ -272,4 +288,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=3005)
